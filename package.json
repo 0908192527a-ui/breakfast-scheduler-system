@@ -1,0 +1,16 @@
+{
+  "name": "breakfast-scheduler-system",
+  "version": "1.0.0",
+  "description": "早餐店自動排班系統",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "keywords": [
+    "schedule",
+    "breakfast",
+    "store",
+    "retail"
+  ],
+  "license": "MIT"
+}

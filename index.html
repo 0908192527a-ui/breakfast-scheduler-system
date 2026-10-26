@@ -1,0 +1,1448 @@
+const STORAGE_KEY = 'breakfastSchedulerStateV1';
+const WEEKDAY_NAMES = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'];
+const leaveTypeColors = {
+  work: 'work',
+  off: 'off',
+  red: 'red',
+  yellow: 'yellow',
+  blue: 'blue'
+};
+
+const app = {
+  state: null,
+  selectedSection: 'dashboard',
+  cellEditor: null,
+  monthRef: { year: new Date().getFullYear(), month: new Date().getMonth() + 1 }
+};
+
+function getMonthKey(year, month) {
+  return `${year}-${String(month).padStart(2, '0')}`;
+}
+
+function getSelectedMonthKey() {
+  return getMonthKey(app.monthRef.year, app.monthRef.month);
+}
+
+function getInitialState() {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = now.getMonth() + 1;
+  const defaultEmployees = [
+    { id: 'emp-1', name: '小明', type: 'fulltime', status: 'active', defaultVacationDays: 8, maxConsecutive: 5, unavailableDates: ['2026-10-15'], preferredOffDates: ['2026-10-12'], availableWeekdays: [1,2,3,4,5,6,7], notes: '', weeklyTargetHours: 40, currentCarry: 0 },
+    { id: 'emp-2', name: '小華', type: 'fulltime', status: 'active', defaultVacationDays: 8, maxConsecutive: 5, unavailableDates: [], preferredOffDates: ['2026-10-18'], availableWeekdays: [1,2,3,4,5,6,7], notes: '', weeklyTargetHours: 40, currentCarry: 1 },
+    { id: 'emp-3', name: '小美', type: 'fulltime', status: 'active', defaultVacationDays: 8, maxConsecutive: 5, unavailableDates: [], preferredOffDates: ['2026-10-20'], availableWeekdays: [1,2,3,4,5,6,7], notes: '', weeklyTargetHours: 40, currentCarry: 2 },
+    { id: 'emp-4', name: '小安', type: 'fulltime', status: 'active', defaultVacationDays: 8, maxConsecutive: 5, unavailableDates: ['2026-10-28'], preferredOffDates: ['2026-10-09'], availableWeekdays: [1,2,3,4,5,6,7], notes: '', weeklyTargetHours: 40, currentCarry: 3 },
+    { id: 'pt-1', name: 'PT小宇', type: 'pt', status: 'active', defaultVacationDays: 0, maxConsecutive: 3, unavailableDates: [], preferredOffDates: ['2026-10-14'], availableWeekdays: [1,3,5], notes: '', weeklyTargetHours: 20, currentCarry: 0, maxDailyHours: 5, workTimeRange: '09:00-15:00' }
+  ];
+
+  return {
+    selectedYear: year,
+    selectedMonth: month,
+    employees: defaultEmployees,
+    staffing: {
+      weekly: [
+        { weekday: 1, min: 3, target: 4 },
+        { weekday: 2, min: 3, target: 4 },
+        { weekday: 3, min: 3, target: 4 },
+        { weekday: 4, min: 3, target: 4 },
+        { weekday: 5, min: 4, target: 5 },
+        { weekday: 6, min: 4, target: 5 },
+        { weekday: 7, min: 3, target: 4 }
+      ],
+      overrides: {
+        [`${year}-${String(month).padStart(2, '0')}-05`]: { min: 4, target: 5 },
+        [`${year}-${String(month).padStart(2, '0')}-12`]: { min: 4, target: 5 }
+      },
+      useTimeSlots: false,
+      timeSlots: []
+    },
+    leaveTypes: [
+      { id: 'general', name: '一般排休', countedInNormalLeave: true, prohibited: true, requireApproval: false, includedInStats: true },
+      { id: 'holiday', name: '國定假日', countedInNormalLeave: false, prohibited: true, requireApproval: false, includedInStats: true },
+      { id: 'special', name: '特休', countedInNormalLeave: false, prohibited: true, requireApproval: true, includedInStats: true },
+      { id: 'sick', name: '病假', countedInNormalLeave: false, prohibited: true, requireApproval: false, includedInStats: true },
+      { id: 'personal', name: '事假', countedInNormalLeave: false, prohibited: true, requireApproval: false, includedInStats: true },
+      { id: 'other', name: '其他', countedInNormalLeave: false, prohibited: true, requireApproval: false, includedInStats: true }
+    ],
+    leaveRecords: [
+      { id: 'leave-1', employeeId: 'emp-1', typeId: 'special', dateStart: `${year}-${String(month).padStart(2, '0')}-08`, dateEnd: `${year}-${String(month).padStart(2, '0')}-10`, status: 'approved', note: '特休' },
+      { id: 'leave-2', employeeId: 'pt-1', typeId: 'general', dateStart: `${year}-${String(month).padStart(2, '0')}-16`, dateEnd: `${year}-${String(month).padStart(2, '0')}-16`, status: 'approved', note: '例行休息' }
+    ],
+    conflictGroups: [
+      { id: 'group-1', label: '小明與小華不能同日休假', employees: ['emp-1', 'emp-2'] },
+      { id: 'group-2', label: '小美與小安不能同日休假', employees: ['emp-3', 'emp-4'] }
+    ],
+    schedule: {},
+    versions: {},
+    attendanceHistory: {
+      [`${year - 1}-${String(month + 11 > 12 ? month - 1 : month + 11).padStart(2, '0')}`]: {
+        'emp-1': 4,
+        'emp-2': 3,
+        'emp-3': 5,
+        'emp-4': 4,
+        'pt-1': 2
+      }
+    },
+    issues: []
+  };
+}
+
+function loadState() {
+  const saved = localStorage.getItem(STORAGE_KEY);
+  if (!saved) {
+    const initial = getInitialState();
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(initial));
+    return initial;
+  }
+
+  try {
+    const parsed = JSON.parse(saved);
+    return parsed;
+  } catch (error) {
+    const fallback = getInitialState();
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(fallback));
+    return fallback;
+  }
+}
+
+function saveState() {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(app.state));
+}
+
+function showToast(message) {
+  const toast = document.getElementById('toast');
+  if (!toast) return;
+  toast.textContent = message;
+  toast.classList.add('show');
+  setTimeout(() => toast.classList.remove('show'), 2200);
+}
+
+function updateMonthRefFromSelected() {
+  app.monthRef = {
+    year: app.state.selectedYear,
+    month: app.state.selectedMonth
+  };
+}
+
+function ensureMonthData() {
+  const key = getSelectedMonthKey();
+  if (!app.state.schedule[key]) {
+    app.state.schedule[key] = {};
+  }
+  if (!app.state.versions[key]) {
+    app.state.versions[key] = [];
+  }
+}
+
+function getEmployeesByStatus(activeOnly = false) {
+  return app.state.employees.filter((emp) => (!activeOnly || emp.status === 'active'));
+}
+
+function getLeaveTypeById(id) {
+  return (app.state.leaveTypes || []).find((type) => type.id === id) || { id: 'off', name: '休假' };
+}
+
+function getDaysInMonth(year, month) {
+  return new Date(year, month, 0).getDate();
+}
+
+function getDateString(dateObj) {
+  return `${dateObj.getFullYear()}-${String(dateObj.getMonth() + 1).padStart(2, '0')}-${String(dateObj.getDate()).padStart(2, '0')}`;
+}
+
+function getWorkStatusForEmployee(employeeId, dateString) {
+  const key = getSelectedMonthKey();
+  const monthData = app.state.schedule[key] || {};
+  const employeeMap = monthData[employeeId] || {};
+  const status = employeeMap[dateString];
+  if (!status) return 'off';
+  if (status === 'work') return 'work';
+  if (status === 'off') return 'off';
+  if (String(status).startsWith('leave:')) return status.replace('leave:', '');
+  return status;
+}
+
+function setStatusForEmployee(employeeId, dateString, status) {
+  const key = getSelectedMonthKey();
+  if (!app.state.schedule[key]) app.state.schedule[key] = {};
+  if (!app.state.schedule[key][employeeId]) app.state.schedule[key][employeeId] = {};
+  app.state.schedule[key][employeeId][dateString] = status;
+  app.state.issues = evaluateSchedule(key); 
+  saveState();
+}
+
+function makeMonthDates(year, month) {
+  const days = [];
+  const total = getDaysInMonth(year, month);
+  for (let i = 1; i <= total; i += 1) {
+    const d = new Date(year, month - 1, i);
+    days.push({
+      day: i,
+      dateString: getDateString(d),
+      weekday: d.getDay(),
+      label: `${i}`,
+      display: `${String(month).padStart(2, '0')}/${String(i).padStart(2, '0')}`
+    });
+  }
+  return days;
+}
+
+function getDailyRequirement(dateString) {
+  const weekDay = new Date(`${dateString}T00:00:00`).getDay();
+  const monthKey = getSelectedMonthKey();
+  const weekly = app.state.staffing.weekly.find((item) => item.weekday === weekDay) || { min: 2, target: 3 };
+  const override = app.state.staffing.overrides[dateString];
+  return {
+    min: override ? override.min : weekly.min,
+    target: override ? override.target : weekly.target
+  };
+}
+
+function formatDateDisplay(dateString) {
+  if (!dateString) return '-';
+  const [year, month, day] = dateString.split('-').map(Number);
+  return `${String(month).padStart(2, '0')}/${String(day).padStart(2, '0')}`;
+}
+
+function getEmployeeWorkCount(employeeId, monthKey) {
+  const schedule = app.state.schedule[monthKey] || {};
+  const employeeMap = schedule[employeeId] || {};
+  return Object.entries(employeeMap).filter(([date, status]) => status === 'work').length;
+}
+
+function getEmployeeOffCount(employeeId, monthKey) {
+  const schedule = app.state.schedule[monthKey] || {};
+  const employeeMap = schedule[employeeId] || {};
+  return Object.entries(employeeMap).filter(([date, status]) => status === 'off' || String(status).startsWith('leave:')).length;
+}
+
+function getEmployeePreferredOffDates(employee) {
+  return employee.preferredOffDates || [];
+}
+
+function computeConsecutiveWorkDays(employeeId, dateString, monthKey) {
+  const monthDates = makeMonthDates(app.monthRef.year, app.monthRef.month);
+  const idx = monthDates.findIndex((item) => item.dateString === dateString);
+  if (idx < 0) return 0;
+  let count = 0;
+  for (let i = idx; i >= 0; i -= 1) {
+    const currentDate = monthDates[i].dateString;
+    const status = getWorkStatusForEmployee(employeeId, currentDate);
+    if (status === 'work') count += 1; else break;
+  }
+  return count;
+}
+
+function isEmployeeAvailableOnDate(employee, dateString) {
+  const isUnavailableExplicit = (employee.unavailableDates || []).includes(dateString);
+  if (isUnavailableExplicit) return false;
+
+  const monthKey = getSelectedMonthKey();
+  const leaveRecords = app.state.leaveRecords || [];
+  for (const record of leaveRecords) {
+    if (record.employeeId !== employee.id) continue;
+    if (record.status !== 'approved') continue;
+    const start = new Date(`${record.dateStart}T00:00:00`);
+    const end = new Date(`${record.dateEnd || record.dateStart}T00:00:00`);
+    const current = new Date(`${dateString}T00:00:00`);
+    if (current >= start && current <= end) {
+      const leaveType = getLeaveTypeById(record.typeId);
+      if (leaveType && leaveType.prohibited) return false;
+    }
+  }
+
+  if (employee.type === 'pt') {
+    const week = new Date(`${dateString}T00:00:00`).getDay();
+    if (!employee.availableWeekdays || !employee.availableWeekdays.includes(week)) return false;
+  }
+
+  return true;
+}
+
+function evaluateSchedule(monthKey) {
+  const issues = [];
+  const monthDates = makeMonthDates(app.monthRef.year, app.monthRef.month);
+  const employees = getEmployeesByStatus(true);
+
+  monthDates.forEach((date) => {
+    const requirement = getDailyRequirement(date.dateString);
+    let count = 0;
+
+    employees.forEach((employee) => {
+      const status = getWorkStatusForEmployee(employee.id, date.dateString);
+      if (status === 'work') count += 1;
+    });
+
+    if (count < requirement.min) {
+      issues.push({
+        level: 'yellow',
+        title: `${formatDateDisplay(date.dateString)} 人力不足`,
+        details: `最低需求 ${requirement.min} 人，實際 ${count} 人。可由候補員工補足或調整需求。`,
+        date: date.dateString
+      });
+    }
+
+    const daySelected = employees.filter((employee) => getWorkStatusForEmployee(employee.id, date.dateString) === 'work');
+    daySelected.forEach((employee) => {
+      if (!isEmployeeAvailableOnDate(employee, date.dateString)) {
+        issues.push({
+          level: 'red',
+          title: `${employee.name} 被安排於不可上班日期`,
+          details: `${formatDateDisplay(date.dateString)} 不符合員工可上班條件或已核准休假。`,
+          date: date.dateString
+        });
+      }
+    });
+
+    const offGroupWinners = [];
+    app.state.conflictGroups.forEach((group) => {
+      const offCount = group.employees.filter((employeeId) => {
+        const status = getWorkStatusForEmployee(employeeId, date.dateString);
+        return status === 'off' || String(status).startsWith('leave:');
+      }).length;
+      if (offCount === group.employees.length) {
+        offGroupWinners.push(group.label);
+      }
+    });
+    if (offGroupWinners.length > 0) {
+      issues.push({
+        level: 'red',
+        title: `不可同日休假組合衝突`,
+        details: `${offGroupWinners.join('；')}。請調整休假安排。`,
+        date: date.dateString
+      });
+    }
+  });
+
+  employees.forEach((employee) => {
+    const employeeDates = makeMonthDates(app.monthRef.year, app.monthRef.month);
+    let longestRun = 0;
+    let currentRun = 0;
+    let lastDate = null;
+
+    employeeDates.forEach((dateObj) => {
+      const status = getWorkStatusForEmployee(employee.id, dateObj.dateString);
+      if (status === 'work') {
+        currentRun += 1;
+        longestRun = Math.max(longestRun, currentRun);
+      } else {
+        currentRun = 0;
+      }
+      lastDate = dateObj.dateString;
+    });
+
+    if (longestRun > (employee.maxConsecutive || 5)) {
+      issues.push({
+        level: 'red',
+        title: `${employee.name} 連續上班超過限制`,
+        details: `設定最多連續 ${employee.maxConsecutive || 5} 天，實際 ${longestRun} 天。`,
+        date: lastDate
+      });
+    }
+
+    const preferredOff = getEmployeePreferredOffDates(employee);
+    const actualPreferredOff = preferredOff.filter((dateString) => {
+      const status = getWorkStatusForEmployee(employee.id, dateString);
+      return status === 'off' || String(status).startsWith('leave:');
+    }).length;
+    if (preferredOff.length > 0 && actualPreferredOff < preferredOff.length) {
+      issues.push({
+        level: 'blue',
+        title: `${employee.name} 希望休假日期未完全滿足`,
+        details: `希望休假 ${preferredOff.length} 天，已安排 ${actualPreferredOff} 天。`,
+        date: preferredOff[0]
+      });
+    }
+  });
+
+  return issues;
+}
+
+function getSelectedMonthSchedule() {
+  const key = getSelectedMonthKey();
+  const monthSchedule = app.state.schedule[key] || {};
+  return monthSchedule;
+}
+
+function renderNav() {
+  const nav = document.getElementById('nav');
+  if (!nav) return;
+  nav.innerHTML = `
+    <button class="${app.selectedSection === 'dashboard' ? 'active' : ''}" data-section="dashboard">首頁</button>
+    <button class="${app.selectedSection === 'employees' ? 'active' : ''}" data-section="employees">員工管理</button>
+    <button class="${app.selectedSection === 'settings' ? 'active' : ''}" data-section="settings">排班設定</button>
+    <button class="${app.selectedSection === 'leave' ? 'active' : ''}" data-section="leave">休假管理</button>
+    <button class="${app.selectedSection === 'generate' ? 'active' : ''}" data-section="generate">自動排班</button>
+    <button class="${app.selectedSection === 'schedule' ? 'active' : ''}" data-section="schedule">月班表</button>
+    <button class="${app.selectedSection === 'issues' ? 'active' : ''}" data-section="issues">缺人與問題</button>
+    <button class="${app.selectedSection === 'stats' ? 'active' : ''}" data-section="stats">出勤統計</button>
+    <button class="${app.selectedSection === 'backup' ? 'active' : ''}" data-section="backup">資料備份</button>
+  `;
+
+  nav.querySelectorAll('button[data-section]').forEach((button) => {
+    button.addEventListener('click', () => {
+      app.selectedSection = button.dataset.section;
+      renderNav();
+      renderAllViews();
+    });
+  });
+}
+
+function renderDashboard() {
+  const section = document.getElementById('dashboardSection');
+  if (!section) return;
+  const activeEmployees = getEmployeesByStatus(true);
+  const fulltime = activeEmployees.filter((emp) => emp.type === 'fulltime').length;
+  const pt = activeEmployees.filter((emp) => emp.type === 'pt').length;
+  const monthKey = getSelectedMonthKey();
+  const monthDates = makeMonthDates(app.monthRef.year, app.monthRef.month);
+  const shortageDays = monthDates.filter((date) => {
+    const demand = getDailyRequirement(date.dateString);
+    const count = employeesForDate(date.dateString).filter((emp) => emp.status === 'work').length;
+    return count < demand.min;
+  }).length;
+
+  const issueCount = (app.state.issues || []).length;
+  const currentScheduleExists = Object.keys(app.state.schedule[monthKey] || {}).length > 0;
+
+  section.innerHTML = `
+    <div class="kpis">
+      <div class="kpi">
+        <div class="label">目前月份</div>
+        <div class="value">${app.monthRef.month} 月</div>
+      </div>
+      <div class="kpi">
+        <div class="label">在職正職</div>
+        <div class="value">${fulltime}</div>
+      </div>
+      <div class="kpi">
+        <div class="label">在職 PT</div>
+        <div class="value">${pt}</div>
+      </div>
+      <div class="kpi">
+        <div class="label">班表已產生</div>
+        <div class="value">${currentScheduleExists ? '是' : '否'}</div>
+      </div>
+      <div class="kpi">
+        <div class="label">缺人日期</div>
+        <div class="value">${shortageDays}</div>
+      </div>
+      <div class="kpi">
+        <div class="label">待處理問題</div>
+        <div class="value">${issueCount}</div>
+      </div>
+    </div>
+    <div class="panel">
+      <h3>快速入口</h3>
+      <div class="small-btns">
+        <button class="primary" data-open="schedule">進入月班表</button>
+        <button class="secondary" data-open="generate">自動排班</button>
+        <button class="warning" data-open="employees">員工管理</button>
+      </div>
+    </div>
+  `;
+
+  section.querySelectorAll('[data-open]').forEach((button) => {
+    button.addEventListener('click', () => {
+      app.selectedSection = button.dataset.open;
+      renderNav();
+      renderAllViews();
+    });
+  });
+}
+
+function renderEmployeeForm() {
+  const section = document.getElementById('employeesSection');
+  if (!section) return;
+
+  const employeeData = {
+    id: '',
+    name: '',
+    type: 'fulltime',
+    status: 'active',
+    defaultVacationDays: 8,
+    maxConsecutive: 5,
+    unavailableDates: '',
+    preferredOffDates: '',
+    availableWeekdays: '1,2,3,4,5,6,7',
+    weeklyTargetHours: '',
+    notes: '',
+    workTimeRange: '08:00-17:00',
+    maxDailyHours: 8
+  };
+
+  section.innerHTML = `
+    <div class="grid-2">
+      <div class="panel">
+        <h3>新增 / 編輯員工</h3>
+        <form id="employeeForm">
+          <input type="hidden" name="id" value="${employeeData.id}">
+          <div class="grid-2">
+            <div class="field">
+              <label class="label">員工姓名</label>
+              <input name="name" placeholder="例如：小明" required>
+            </div>
+            <div class="field">
+              <label class="label">員工類型</label>
+              <select name="type">
+                <option value="fulltime">正職</option>
+                <option value="pt">PT</option>
+              </select>
+            </div>
+            <div class="field">
+              <label class="label">在職狀態</label>
+              <select name="status">
+                <option value="active">在職</option>
+                <option value="inactive">停用</option>
+              </select>
+            </div>
+            <div class="field">
+              <label class="label">每月預設休假</label>
+              <input name="defaultVacationDays" type="number" min="0" value="8">
+            </div>
+            <div class="field">
+              <label class="label">最多連續上班</label>
+              <input name="maxConsecutive" type="number" min="1" value="5">
+            </div>
+            <div class="field">
+              <label class="label">每週預計工時</label>
+              <input name="weeklyTargetHours" type="number" min="0" value="40">
+            </div>
+            <div class="field">
+              <label class="label">可上班星期（1-7）</label>
+              <input name="availableWeekdays" value="1,2,3,4,5,6,7">
+            </div>
+            <div class="field">
+              <label class="label">可上班時間</label>
+              <input name="workTimeRange" value="08:00-17:00">
+            </div>
+            <div class="field">
+              <label class="label">指定不可上班日期</label>
+              <input name="unavailableDates" placeholder="2026-10-15,2026-10-28">
+            </div>
+            <div class="field">
+              <label class="label">希望休假日期</label>
+              <input name="preferredOffDates" placeholder="2026-10-12,2026-10-20">
+            </div>
+            <div class="field">
+              <label class="label">最大每日工時</label>
+              <input name="maxDailyHours" type="number" min="1" value="8">
+            </div>
+            <div class="field">
+              <label class="label">備註</label>
+              <textarea name="notes" placeholder="例如：長班、偏好下午班"></textarea>
+            </div>
+          </div>
+          <div class="small-btns">
+            <button type="submit" class="primary">儲存員工</button>
+            <button type="button" class="secondary" id="resetEmployeeFormBtn">清空表單</button>
+          </div>
+        </form>
+      </div>
+      <div class="panel">
+        <h3>員工列表</h3>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>姓名</th>
+                <th>類型</th>
+                <th>狀態</th>
+                <th>月休</th>
+                <th>連續上限</th>
+                <th>可上班</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="employeeTableBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  `;
+
+  const employeeTableBody = document.getElementById('employeeTableBody');
+  employeeTableBody.innerHTML = getEmployeesByStatus(false).map((employee) => `
+    <tr>
+      <td>${employee.name}</td>
+      <td>${employee.type === 'fulltime' ? '正職' : 'PT'}</td>
+      <td>${employee.status === 'active' ? '在職' : '停用'}</td>
+      <td>${employee.defaultVacationDays || 0}</td>
+      <td>${employee.maxConsecutive || 5}</td>
+      <td>${(employee.availableWeekdays || [1,2,3,4,5,6,7]).join(', ')}</td>
+      <td>
+        <button class="secondary" data-edit-id="${employee.id}">編輯</button>
+        <button class="danger" data-delete-id="${employee.id}">刪除</button>
+      </td>
+    </tr>
+  `).join('');
+
+  employeeTableBody.querySelectorAll('[data-edit-id]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const employee = getEmployeesByStatus(false).find((item) => item.id === button.dataset.editId);
+      if (!employee) return;
+      const form = document.getElementById('employeeForm');
+      form.name.value = employee.name;
+      form.type.value = employee.type;
+      form.status.value = employee.status;
+      form.defaultVacationDays.value = employee.defaultVacationDays || 8;
+      form.maxConsecutive.value = employee.maxConsecutive || 5;
+      form.weeklyTargetHours.value = employee.weeklyTargetHours || 40;
+      form.availableWeekdays.value = (employee.availableWeekdays || [1,2,3,4,5,6,7]).join(',');
+      form.workTimeRange.value = employee.workTimeRange || '08:00-17:00';
+      form.unavailableDates.value = (employee.unavailableDates || []).join(',');
+      form.preferredOffDates.value = (employee.preferredOffDates || []).join(',');
+      form.maxDailyHours.value = employee.maxDailyHours || 8;
+      form.notes.value = employee.notes || '';
+      form.id.value = employee.id;
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    });
+  });
+
+  employeeTableBody.querySelectorAll('[data-delete-id]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const id = button.dataset.deleteId;
+      if (confirm('確定要刪除此員工？')) {
+        app.state.employees = getEmployeesByStatus(false).filter((emp) => emp.id !== id);
+        saveState();
+        renderAllViews();
+      }
+    });
+  });
+
+  document.getElementById('employeeForm').addEventListener('submit', (event) => {
+    event.preventDefault();
+    const formData = new FormData(event.target);
+    const employee = {
+      id: formData.get('id') || `emp-${Date.now()}`,
+      name: String(formData.get('name')).trim(),
+      type: formData.get('type'),
+      status: formData.get('status'),
+      defaultVacationDays: Number(formData.get('defaultVacationDays')) || 8,
+      maxConsecutive: Number(formData.get('maxConsecutive')) || 5,
+      availableWeekdays: String(formData.get('availableWeekdays'))
+        .split(',')
+        .map((item) => Number(item.trim()))
+        .filter((item) => !Number.isNaN(item)),
+      workTimeRange: String(formData.get('workTimeRange') || '08:00-17:00').trim(),
+      unavailableDates: String(formData.get('unavailableDates') || '')
+        .split(',')
+        .map((item) => item.trim())
+        .filter(Boolean),
+      preferredOffDates: String(formData.get('preferredOffDates') || '')
+        .split(',')
+        .map((item) => item.trim())
+        .filter(Boolean),
+      weeklyTargetHours: Number(formData.get('weeklyTargetHours')) || 0,
+      maxDailyHours: Number(formData.get('maxDailyHours')) || 8,
+      notes: String(formData.get('notes') || '').trim()
+    };
+
+    if (!employee.name) {
+      alert('請輸入員工姓名');
+      return;
+    }
+
+    const existingIndex = app.state.employees.findIndex((item) => item.id === employee.id);
+    if (existingIndex >= 0) {
+      app.state.employees[existingIndex] = employee;
+    } else {
+      app.state.employees.push(employee);
+    }
+
+    saveState();
+    renderAllViews();
+    document.getElementById('employeeForm').reset();
+    showToast('員工資料已儲存');
+  });
+
+  document.getElementById('resetEmployeeFormBtn').addEventListener('click', () => {
+    document.getElementById('employeeForm').reset();
+    document.querySelector('#employeeForm [name="id"]').value = '';
+  });
+}
+
+function renderSettings() {
+  const section = document.getElementById('settingsSection');
+  if (!section) return;
+
+  const rows = app.state.staffing.weekly.map((item) => `
+    <tr>
+      <td>${WEEKDAY_NAMES[item.weekday]}</td>
+      <td><input data-weekday="${item.weekday}" data-field="min" value="${item.min}" type="number" min="0"></td>
+      <td><input data-weekday="${item.weekday}" data-field="target" value="${item.target}" type="number" min="0"></td>
+    </tr>
+  `).join('');
+
+  const overrideRows = Object.entries(app.state.staffing.overrides || {}).map(([dateString, config]) => `
+    <tr>
+      <td>${formatDateDisplay(dateString)}</td>
+      <td>${config.min}</td>
+      <td>${config.target}</td>
+      <td><button class="danger" data-remove-override="${dateString}">移除</button></td>
+    </tr>
+  `).join('') || '<tr><td colspan="4">尚未設定特定日期覆寫</td></tr>';
+
+  section.innerHTML = `
+    <div class="panel">
+      <h3>每週人力需求</h3>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>星期</th>
+              <th>最低需求</th>
+              <th>目標人數</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+      <div class="small-btns">
+        <button class="primary" id="saveWeeklyDemandBtn">儲存需求設定</button>
+      </div>
+    </div>
+    <div class="panel">
+      <h3>特定日期覆寫</h3>
+      <div class="grid-3">
+        <div class="field">
+          <label class="label">日期</label>
+          <input id="overrideDate" type="date">
+        </div>
+        <div class="field">
+          <label class="label">最低需求</label>
+          <input id="overrideMin" type="number" min="0" value="4">
+        </div>
+        <div class="field">
+          <label class="label">目標人數</label>
+          <input id="overrideTarget" type="number" min="0" value="5">
+        </div>
+      </div>
+      <div class="small-btns">
+        <button class="secondary" id="addOverrideBtn">新增覆寫</button>
+      </div>
+      <div class="table-wrap" style="margin-top: 1rem;">
+        <table>
+          <thead>
+            <tr>
+              <th>日期</th>
+              <th>最低需求</th>
+              <th>目標人數</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody>${overrideRows}</tbody>
+        </table>
+      </div>
+    </div>
+  `;
+
+  document.getElementById('saveWeeklyDemandBtn').addEventListener('click', () => {
+    const inputs = section.querySelectorAll('[data-weekday]');
+    const newWeekly = [];
+    inputs.forEach((input) => {
+      const weekday = Number(input.dataset.weekday);
+      const existing = app.state.staffing.weekly.find((item) => item.weekday === weekday);
+      if (existing) {
+        existing[input.dataset.field] = Number(input.value) || 0;
+      } else {
+        newWeekly.push({ weekday, min: Number(input.value) || 0, target: Number(input.value) || 0 });
+      }
+    });
+    app.state.staffing.weekly = app.state.staffing.weekly.map((item) => ({
+      ...item,
+      min: Number(section.querySelector(`[data-weekday="${item.weekday}"][data-field="min"]`).value) || 0,
+      target: Number(section.querySelector(`[data-weekday="${item.weekday}"][data-field="target"]`).value) || 0
+    }));
+    saveState();
+    renderAllViews();
+    showToast('排班需求設定已儲存');
+  });
+
+  document.getElementById('addOverrideBtn').addEventListener('click', () => {
+    const dateString = document.getElementById('overrideDate').value;
+    const min = Number(document.getElementById('overrideMin').value) || 0;
+    const target = Number(document.getElementById('overrideTarget').value) || 0;
+    if (!dateString) {
+      alert('請選擇日期');
+      return;
+    }
+    app.state.staffing.overrides[dateString] = { min, target };
+    saveState();
+    renderAllViews();
+    showToast('已新增特定日期覆寫');
+  });
+
+  section.querySelectorAll('[data-remove-override]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const dateString = button.dataset.removeOverride;
+      delete app.state.staffing.overrides[dateString];
+      saveState();
+      renderAllViews();
+    });
+  });
+}
+
+function getDateRangesForLeaveRecord(record) {
+  const start = new Date(`${record.dateStart}T00:00:00`);
+  const end = new Date(`${record.dateEnd || record.dateStart}T00:00:00`);
+  const dates = [];
+  const cursor = new Date(start);
+  while (cursor <= end) {
+    dates.push(getDateString(cursor));
+    cursor.setDate(cursor.getDate() + 1);
+  }
+  return dates;
+}
+
+function renderLeave() {
+  const section = document.getElementById('leaveSection');
+  if (!section) return;
+
+  const leaveRows = (app.state.leaveTypes || []).map((type) => `
+    <tr>
+      <td>${type.name}</td>
+      <td>${type.countedInNormalLeave ? '是' : '否'}</td>
+      <td>${type.prohibited ? '是' : '否'}</td>
+      <td>${type.requireApproval ? '需核准' : '直接採用'}</td>
+      <td><button class="secondary" data-edit-leave-type="${type.id}">編輯</button></td>
+    </tr>
+  `).join('');
+
+  const recordRows = (app.state.leaveRecords || []).map((record) => {
+    const employee = app.state.employees.find((item) => item.id === record.employeeId);
+    const type = getLeaveTypeById(record.typeId);
+    return `
+      <tr>
+        <td>${employee ? employee.name : record.employeeId}</td>
+        <td>${type.name}</td>
+        <td>${record.dateStart} ~ ${record.dateEnd || record.dateStart}</td>
+        <td>${record.status}</td>
+        <td><button class="danger" data-delete-leave-record="${record.id}">刪除</button></td>
+      </tr>
+    `;
+  }).join('') || '<tr><td colspan="5">尚未建立休假紀錄</td></tr>';
+
+  section.innerHTML = `
+    <div class="grid-2">
+      <div class="panel">
+        <h3>假別設定</h3>
+        <form id="leaveTypeForm">
+          <input type="hidden" name="id" value="">
+          <div class="grid-2">
+            <div class="field">
+              <label class="label">假別名稱</label>
+              <input name="name" required>
+            </div>
+            <div class="field">
+              <label class="label">是否計入一般月休</label>
+              <select name="countedInNormalLeave">
+                <option value="true">是</option>
+                <option value="false">否</option>
+              </select>
+            </div>
+            <div class="field">
+              <label class="label">是否禁止安排上班</label>
+              <select name="prohibited">
+                <option value="true">是</option>
+                <option value="false">否</option>
+              </select>
+            </div>
+            <div class="field">
+              <label class="label">是否需要店長核准</label>
+              <select name="requireApproval">
+                <option value="true">是</option>
+                <option value="false">否</option>
+              </select>
+            </div>
+          </div>
+          <div class="small-btns">
+            <button type="submit" class="primary">儲存假別</button>
+            <button type="button" class="secondary" id="resetLeaveTypeBtn">清空</button>
+          </div>
+        </form>
+        <div class="table-wrap" style="margin-top: 1rem;">
+          <table>
+            <thead><tr><th>名稱</th><th>計入月休</th><th>禁止上班</th><th>核准</th><th>操作</th></tr></thead>
+            <tbody>${leaveRows}</tbody>
+          </table>
+        </div>
+      </div>
+      <div class="panel">
+        <h3>指定休假</h3>
+        <form id="leaveRecordForm">
+          <div class="grid-2">
+            <div class="field">
+              <label class="label">員工</label>
+              <select name="employeeId">
+                ${getEmployeesByStatus(true).map((emp) => `<option value="${emp.id}">${emp.name}</option>`).join('')}
+              </select>
+            </div>
+            <div class="field">
+              <label class="label">假別</label>
+              <select name="typeId">
+                ${(app.state.leaveTypes || []).map((type) => `<option value="${type.id}">${type.name}</option>`).join('')}
+              </select>
+            </div>
+            <div class="field">
+              <label class="label">開始日期</label>
+              <input type="date" name="dateStart" required>
+            </div>
+            <div class="field">
+              <label class="label">結束日期</label>
+              <input type="date" name="dateEnd">
+            </div>
+            <div class="field">
+              <label class="label">狀態</label>
+              <select name="status">
+                <option value="approved">已核准</option>
+                <option value="pending">待核准</option>
+              </select>
+            </div>
+            <div class="field">
+              <label class="label">備註</label>
+              <input name="note" placeholder="備註內容">
+            </div>
+          </div>
+          <div class="small-btns">
+            <button type="submit" class="primary">儲存休假</button>
+          </div>
+        </form>
+        <div class="table-wrap" style="margin-top: 1rem;">
+          <table>
+            <thead><tr><th>員工</th><th>假別</th><th>日期</th><th>狀態</th><th>操作</th></tr></thead>
+            <tbody>${recordRows}</tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  `;
+
+  document.getElementById('leaveTypeForm').addEventListener('submit', (event) => {
+    event.preventDefault();
+    const form = new FormData(event.target);
+    const type = {
+      id: String(form.get('id') || `leave-type-${Date.now()}`),
+      name: String(form.get('name')).trim(),
+      countedInNormalLeave: String(form.get('countedInNormalLeave')) === 'true',
+      prohibited: String(form.get('prohibited')) === 'true',
+      requireApproval: String(form.get('requireApproval')) === 'true',
+      includedInStats: true
+    };
+
+    if (!type.name) {
+      alert('請輸入假別名稱');
+      return;
+    }
+
+    const index = app.state.leaveTypes.findIndex((item) => item.id === type.id);
+    if (index >= 0) app.state.leaveTypes[index] = type; else app.state.leaveTypes.push(type);
+    saveState();
+    renderAllViews();
+    showToast('假別設定已儲存');
+  });
+
+  document.getElementById('leaveRecordForm').addEventListener('submit', (event) => {
+    event.preventDefault();
+    const form = new FormData(event.target);
+    const start = String(form.get('dateStart'));
+    const end = String(form.get('dateEnd') || start);
+    const record = {
+      id: `leave-record-${Date.now()}`,
+      employeeId: String(form.get('employeeId')),
+      typeId: String(form.get('typeId')),
+      dateStart: start,
+      dateEnd: end,
+      status: String(form.get('status')),
+      note: String(form.get('note') || '')
+    };
+    if (!start) {
+      alert('請選擇開始日期');
+      return;
+    }
+    app.state.leaveRecords.push(record);
+    saveState();
+    renderAllViews();
+    showToast('休假已新增');
+  });
+
+  document.getElementById('resetLeaveTypeBtn').addEventListener('click', () => {
+    document.getElementById('leaveTypeForm').reset();
+    document.querySelector('#leaveTypeForm input[name="id"]').value = '';
+  });
+
+  section.querySelectorAll('[data-edit-leave-type]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const item = app.state.leaveTypes.find((type) => type.id === button.dataset.editLeaveType);
+      if (!item) return;
+      const form = document.getElementById('leaveTypeForm');
+      form.id.value = item.id;
+      form.name.value = item.name;
+      form.countedInNormalLeave.value = String(item.countedInNormalLeave);
+      form.prohibited.value = String(item.prohibited);
+      form.requireApproval.value = String(item.requireApproval);
+    });
+  });
+
+  section.querySelectorAll('[data-delete-leave-record]').forEach((button) => {
+    button.addEventListener('click', () => {
+      app.state.leaveRecords = app.state.leaveRecords.filter((record) => record.id !== button.dataset.deleteLeaveRecord);
+      saveState();
+      renderAllViews();
+    });
+  });
+}
+
+function employeesForDate(dateString) {
+  const monthKey = getSelectedMonthKey();
+  const scheduleData = app.state.schedule[monthKey] || {};
+  const result = [];
+  app.state.employees.forEach((employee) => {
+    const status = scheduleData[employee.id]?.[dateString] || 'off';
+    result.push({ employee, status });
+  });
+  return result;
+}
+
+function scoreEmployeeForWork(employee, dateString, monthKey, assignmentCounts) {
+  const status = getWorkStatusForEmployee(employee.id, dateString);
+  if (status === 'work') return -999;
+  if (!isEmployeeAvailableOnDate(employee, dateString)) return -999;
+  if (employee.type === 'pt') {
+    const weekday = new Date(`${dateString}T00:00:00`).getDay();
+    if (!employee.availableWeekdays.includes(weekday)) return -999;
+  }
+
+  let score = 100;
+  score -= (assignmentCounts[employee.id] || 0) * 12;
+  score += ((employee.preferredOffDates || []).includes(dateString) ? 40 : 0);
+  score -= (new Date(`${dateString}T00:00:00`).getDay() === 0 || new Date(`${dateString}T00:00:00`).getDay() === 6 ? 8 : 0);
+
+  const maxRun = computeConsecutiveWorkDays(employee.id, dateString, monthKey);
+  if (maxRun >= (employee.maxConsecutive || 5)) score -= 350;
+
+  const allDates = makeMonthDates(app.monthRef.year, app.monthRef.month);
+  const sameWeekday = allDates.filter((item) => item.weekday === new Date(`${dateString}T00:00:00`).getDay() && getWorkStatusForEmployee(employee.id, item.dateString) === 'work').length;
+  score -= sameWeekday * 2;
+
+  return score;
+}
+
+function generateScheduleForMonth() {
+  const monthKey = getSelectedMonthKey();
+  if (!window.confirm('將依目前規則重新產生本月班表，是否繼續？')) return;
+
+  app.state.versions[monthKey] = app.state.versions[monthKey] || [];
+  app.state.versions[monthKey].push({
+    id: `version-${Date.now()}`,
+    createdAt: new Date().toISOString(),
+    snapshot: JSON.parse(JSON.stringify(app.state.schedule[monthKey] || {})),
+    label: `版本 ${app.state.versions[monthKey].length + 1}`
+  });
+
+  const monthDates = makeMonthDates(app.monthRef.year, app.monthRef.month);
+  const monthSchedule = {};
+  const assignmentCounts = {};
+  app.state.employees.forEach((employee) => {
+    assignmentCounts[employee.id] = 0;
+  });
+
+  monthDates.forEach((dateObj) => {
+    const requirement = getDailyRequirement(dateObj.dateString);
+    const workers = [];
+
+    app.state.employees.forEach((employee) => {
+      if (employee.status !== 'active') return;
+      const effective = scoreEmployeeForWork(employee, dateObj.dateString, monthKey, assignmentCounts);
+      if (effective > 0) {
+        workers.push({ employee, score: effective });
+      }
+    });
+
+    workers.sort((a, b) => b.score - a.score);
+    const selected = [];
+    let selectedCount = 0;
+    for (const { employee } of workers) {
+      if (selectedCount >= requirement.target) break;
+      if (selected.includes(employee.id)) continue;
+      if (!monthSchedule[employee.id]) monthSchedule[employee.id] = {};
+      monthSchedule[employee.id][dateObj.dateString] = 'work';
+      assignmentCounts[employee.id] += 1;
+      selected.push(employee.id);
+      selectedCount += 1;
+    }
+
+    app.state.employees.forEach((employee) => {
+      if (employee.status === 'active' && selected.includes(employee.id)) return;
+      if (!monthSchedule[employee.id]) monthSchedule[employee.id] = {};
+      if (monthSchedule[employee.id][dateObj.dateString] !== 'work') {
+        monthSchedule[employee.id][dateObj.dateString] = 'off';
+      }
+    });
+  });
+
+  const leaveDates = {};
+  (app.state.leaveRecords || []).forEach((record) => {
+    if (record.status !== 'approved') return;
+    const dates = getDateRangesForLeaveRecord(record);
+    dates.forEach((dateString) => {
+      if (!leaveDates[record.employeeId]) leaveDates[record.employeeId] = [];
+      leaveDates[record.employeeId].push(dateString);
+    });
+  });
+
+  Object.keys(monthSchedule).forEach((employeeId) => {
+    const employee = app.state.employees.find((item) => item.id === employeeId);
+    if (!employee) return;
+    monthDates.forEach((dateObj) => {
+      const dateString = dateObj.dateString;
+      const status = monthSchedule[employeeId][dateString];
+      if (leaveDates[employeeId] && leaveDates[employeeId].includes(dateString)) {
+        const matched = (app.state.leaveRecords || []).find((record) => record.employeeId === employeeId && getDateRangesForLeaveRecord(record).includes(dateString));
+        monthSchedule[employeeId][dateString] = `leave:${matched ? matched.typeId : 'general'}`;
+      }
+      if (status === 'off' && !isEmployeeAvailableOnDate(employee, dateString)) {
+        monthSchedule[employeeId][dateString] = `leave:general`;
+      }
+    });
+  });
+
+  app.state.schedule[monthKey] = monthSchedule;
+  app.state.issues = evaluateSchedule(monthKey);
+  saveState();
+  renderAllViews();
+  showToast('班表已重新產生');
+}
+
+function renderSchedule() {
+  const section = document.getElementById('scheduleSection');
+  if (!section) return;
+
+  const monthDates = makeMonthDates(app.monthRef.year, app.monthRef.month);
+  const employees = getEmployeesByStatus(true);
+  const scheduleMap = getSelectedMonthSchedule();
+
+  const tableHeader = `
+    <tr>
+      <th>員工</th>
+      ${monthDates.map((date) => `<th>${date.day}<br>${WEEKDAY_NAMES[date.weekday]}</th>`).join('')}
+    </tr>
+  `;
+
+  const rowMarkup = employees.map((employee) => {
+    const cells = monthDates.map((dateObj) => {
+      const status = scheduleMap[employee.id]?.[dateObj.dateString] || 'off';
+      const statusText = status === 'work' ? '上班' : status === 'off' ? '休假' : status.startsWith('leave:') ? getLeaveTypeById(status.replace('leave:', '')).name : '休假';
+      const isIssue = (app.state.issues || []).some((issue) => issue.date === dateObj.dateString && issue.title.includes(employee.name));
+      const className = status === 'work' ? 'cell-work' : status.startsWith('leave:') ? 'cell-holiday' : 'cell-off';
+      return `<td class="${className} ${isIssue ? 'cell-issue' : ''}" data-employee-id="${employee.id}" data-date="${dateObj.dateString}">${statusText}</td>`;
+    }).join('');
+
+    return `<tr><td>${employee.name}</td>${cells}</tr>`;
+  }).join('');
+
+  section.innerHTML = `
+    <div class="panel">
+      <h3>月班表</h3>
+      <div class="small-btns">
+        <button class="secondary" id="prevMonthBtn">上一月</button>
+        <button class="secondary" id="nextMonthBtn">下一月</button>
+        <button class="primary" id="generateBtn">自動排班</button>
+        <button class="warning" id="saveVersionBtn">儲存版本</button>
+        <button class="success" id="printBtn">列印</button>
+      </div>
+      <div class="summary-box">
+        本月：${app.monthRef.year} 年 ${app.monthRef.month} 月，員工總數 ${employees.length} 人。
+      </div>
+      <div class="table-wrap">
+        <table class="schedule-table">
+          <thead>${tableHeader}</thead>
+          <tbody>${rowMarkup}</tbody>
+        </table>
+      </div>
+    </div>
+  `;
+
+  section.querySelectorAll('td[data-employee-id]').forEach((cell) => {
+    cell.addEventListener('click', () => {
+      app.cellEditor = {
+        employeeId: cell.dataset.employeeId,
+        dateString: cell.dataset.date
+      };
+      openCellEditor();
+    });
+  });
+
+  document.getElementById('generateBtn').addEventListener('click', generateScheduleForMonth);
+  document.getElementById('saveVersionBtn').addEventListener('click', () => {
+    const monthKey = getSelectedMonthKey();
+    const saved = app.state.versions[monthKey] || [];
+    saved.push({
+      id: `version-${Date.now()}`,
+      createdAt: new Date().toISOString(),
+      label: `手動版本 ${saved.length + 1}`,
+      snapshot: JSON.parse(JSON.stringify(app.state.schedule[monthKey] || {}))
+    });
+    app.state.versions[monthKey] = saved;
+    saveState();
+    showToast('已儲存班表版本');
+  });
+  document.getElementById('printBtn').addEventListener('click', () => window.print());
+  document.getElementById('prevMonthBtn').addEventListener('click', () => {
+    if (app.monthRef.month === 1) {
+      app.monthRef.year -= 1;
+      app.monthRef.month = 12;
+    } else {
+      app.monthRef.month -= 1;
+    }
+    app.state.selectedYear = app.monthRef.year;
+    app.state.selectedMonth = app.monthRef.month;
+    saveState();
+    renderAllViews();
+  });
+  document.getElementById('nextMonthBtn').addEventListener('click', () => {
+    if (app.monthRef.month === 12) {
+      app.monthRef.year += 1;
+      app.monthRef.month = 1;
+    } else {
+      app.monthRef.month += 1;
+    }
+    app.state.selectedYear = app.monthRef.year;
+    app.state.selectedMonth = app.monthRef.month;
+    saveState();
+    renderAllViews();
+  });
+}
+
+function openCellEditor() {
+  if (!app.cellEditor) return;
+  const employee = app.state.employees.find((item) => item.id === app.cellEditor.employeeId);
+  const dateString = app.cellEditor.dateString;
+  const dialog = document.getElementById('cellDialog');
+  if (!dialog) return;
+  dialog.classList.remove('hidden');
+  dialog.innerHTML = `
+    <div class="dialog">
+      <div class="dialog-header">
+        <h3>更新班表</h3>
+        <button class="secondary" data-close-dialog>關閉</button>
+      </div>
+      <div class="dialog-body">
+        <div class="summary-box">${employee ? employee.name : '員工'} • ${formatDateDisplay(dateString)}</div>
+        <div class="inline-actions">
+          <button class="primary" data-set-status="work">上班</button>
+          <button class="secondary" data-set-status="off">休假</button>
+          ${app.state.leaveTypes.map((type) => `<button class="warning" data-set-status="leave:${type.id}">${type.name}</button>`).join('')}
+        </div>
+      </div>
+      <div class="dialog-actions">
+        <button class="secondary" data-close-dialog>取消</button>
+      </div>
+    </div>
+  `;
+
+  dialog.querySelectorAll('[data-set-status]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const status = button.dataset.setStatus;
+      setStatusForEmployee(app.cellEditor.employeeId, app.cellEditor.dateString, status);
+      app.cellEditor = null;
+      renderAllViews();
+      dialog.classList.add('hidden');
+      dialog.innerHTML = '';
+    });
+  });
+
+  dialog.querySelectorAll('[data-close-dialog]').forEach((button) => {
+    button.addEventListener('click', () => {
+      app.cellEditor = null;
+      dialog.classList.add('hidden');
+      dialog.innerHTML = '';
+    });
+  });
+}
+
+function renderIssues() {
+  const section = document.getElementById('issuesSection');
+  if (!section) return;
+  const issueList = (app.state.issues || []).map((issue) => `
+    <div class="issue-item ${issue.level}">
+      <div class="badge ${issue.level}">${issue.level === 'red' ? '紅色' : issue.level === 'yellow' ? '黃色' : '藍色'}</div>
+      <h4>${issue.title}</h4>
+      <p>${issue.details}</p>
+      <div class="note">${issue.date ? `日期：${formatDateDisplay(issue.date)}` : '一般問題'}</div>
+    </div>
+  `).join('');
+  section.innerHTML = `
+    <div class="panel">
+      <h3>缺人與排班問題</h3>
+      <div class="issue-list">${issueList || '<div class="note">目前沒有明顯問題</div>'}</div>
+    </div>
+  `;
+}
+
+function renderStats() {
+  const section = document.getElementById('statsSection');
+  if (!section) return;
+  const employees = getEmployeesByStatus(true);
+  const rows = employees.map((employee) => {
+    const workDays = getEmployeeWorkCount(employee.id, getSelectedMonthKey());
+    const offDays = getEmployeeOffCount(employee.id, getSelectedMonthKey());
+    const issueCount = (app.state.issues || []).filter((issue) => issue.title.includes(employee.name)).length;
+    return `
+      <tr>
+        <td>${employee.name}</td>
+        <td>${workDays}</td>
+        <td>${offDays}</td>
+        <td>${employee.type === 'fulltime' ? (employee.defaultVacationDays || 0) : 0}</td>
+        <td>${issueCount}</td>
+      </tr>
+    `;
+  }).join('');
+
+  section.innerHTML = `
+    <div class="panel">
+      <h3>員工出勤統計</h3>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>員工</th>
+              <th>上班天數</th>
+              <th>休假天數</th>
+              <th>月休目標</th>
+              <th>排班問題</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+function exportBackup() {
+  const data = JSON.stringify(app.state, null, 2);
+  const blob = new Blob([data], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `breakfast-schedule-backup-${Date.now()}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+  showToast('資料備份已匯出');
+}
+
+function renderBackup() {
+  const section = document.getElementById('backupSection');
+  if (!section) return;
+  section.innerHTML = `
+    <div class="panel">
+      <h3>資料備份與還原</h3>
+      <div class="small-btns">
+        <button class="primary" id="exportBackupBtn">匯出資料備份</button>
+        <button class="secondary" id="restoreBackupBtn">還原備份檔案</button>
+      </div>
+      <input id="backupFileInput" class="hidden" type="file" accept="application/json">
+    </div>
+  `;
+
+  document.getElementById('exportBackupBtn').addEventListener('click', exportBackup);
+  document.getElementById('restoreBackupBtn').addEventListener('click', () => {
+    document.getElementById('backupFileInput').click();
+  });
+
+  document.getElementById('backupFileInput').addEventListener('change', (event) => {
+    const file = event.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const parsed = JSON.parse(String(reader.result));
+        app.state = parsed;
+        app.state.selectedMonth = app.state.selectedMonth || new Date().getMonth() + 1;
+        app.state.selectedYear = app.state.selectedYear || new Date().getFullYear();
+        saveState();
+        renderAllViews();
+        showToast('資料已還原');
+      } catch (error) {
+        alert('備份檔案格式錯誤');
+      }
+    };
+    reader.readAsText(file);
+  });
+}
+
+function renderGenerate() {
+  const section = document.getElementById('generateSection');
+  if (!section) return;
+  section.innerHTML = `
+    <div class="panel">
+      <h3>自動排班</h3>
+      <div class="summary-box">
+        排班優先順序：禁止上班日期 → 最低需求 → 連續上班限制 → 月休目標 → 不可同日休假組合 → PT 可工作條件 → 目標人數 → 公平性。
+      </div>
+      <div class="small-btns">
+        <button class="primary" id="runAutoScheduleBtn">產生班表</button>
+        <button class="secondary" id="clearCurrentMonthBtn">清空本月班表</button>
+      </div>
+    </div>
+  `;
+
+  document.getElementById('runAutoScheduleBtn').addEventListener('click', generateScheduleForMonth);
+  document.getElementById('clearCurrentMonthBtn').addEventListener('click', () => {
+    const monthKey = getSelectedMonthKey();
+    app.state.schedule[monthKey] = {};
+    saveState();
+    renderAllViews();
+    showToast('已清空本月班表');
+  });
+}
+
+function renderAllViews() {
+  ensureMonthData();
+  app.state.issues = evaluateSchedule(getSelectedMonthKey());
+  renderNav();
+  renderDashboard();
+  renderEmployeeForm();
+  renderSettings();
+  renderLeave();
+  renderGenerate();
+  renderSchedule();
+  renderIssues();
+  renderStats();
+  renderBackup();
+
+  const topbarMonth = document.getElementById('topbarMonth');
+  if (topbarMonth) {
+    topbarMonth.textContent = `${app.monthRef.year} 年 ${app.monthRef.month} 月`;
+  }
+
+  const views = ['dashboard', 'employees', 'settings', 'leave', 'generate', 'schedule', 'issues', 'stats', 'backup'];
+  views.forEach((key) => {
+    const section = document.getElementById(`${key}Section`);
+    if (section) {
+      section.classList.toggle('active', app.selectedSection === key);
+    }
+  });
+}
+
+function bindIndexListeners() {
+  const dialogHost = document.getElementById('cellDialog');
+  if (dialogHost) {
+    dialogHost.classList.add('hidden');
+  }
+}
+
+function init() {
+  app.state = loadState();
+  app.state.selectedYear = app.state.selectedYear || new Date().getFullYear();
+  app.state.selectedMonth = app.state.selectedMonth || new Date().getMonth() + 1;
+  app.monthRef = {
+    year: app.state.selectedYear,
+    month: app.state.selectedMonth
+  };
+  bindIndexListeners();
+  renderAllViews();
+}
+
+document.addEventListener('DOMContentLoaded', init);
